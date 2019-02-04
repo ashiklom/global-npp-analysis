@@ -1,0 +1,134 @@
+---
+title: Spatio-temporal drivers of NPP 
+author: Alexey Shiklomanov
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(eval = TRUE, echo = FALSE, dev = "png")
+```
+
+# Introduction
+
+Currently, Hector effectively has a single global plant functional type, with a single common set of parameters ($\beta$, the CO2 fertilization response, and the respiration-temperature Q10).
+In reality, different ecosystems respond differently to changes in climate (including CO2, temperature, and precipitation).
+The overarching objective is to find the minimum number of such plant functional types that captures some target fraction of the variance in climate-NPP response, and to potentially identify which factors besides CO2 explain the most variability in productivity trends across different biomes.
+
+Traditionally, we select PFTs based on _a priori_ knowledge about differences between the structure and physiology of different biomes.
+The idea of this analysis is to instead to an entirely data-driven approach -- i.e. to see if any obvious categories emerge out of analyses of spatio-temporal NPP data.
+This document presents an initial exploration of such a dataset to provide a sense of how I'm thinking about approaching this problem.
+
+# Data
+
+So far, this analysis only uses one NPP dataset: the [Global Production Efficiency Model (GloPEM)](http://glcf.umd.edu/data/glopem/), developed by the University of Maryland.
+It is based on optical observations of the NOAA's [Advanced Very-High Resolution Radiometer (AVHRR)](https://noaasis.noaa.gov/NOAASIS/ml/avhrr.html).
+It has global coverage at 8 km spatial resolution, and is available in 10 day periods or annual sums (used here) from 1981 to 2000.
+
+To get a sense of how the GloPEM data look, here is a map of the data for 2000, the last year they are available.
+
+```{r plot_2000, fig.cap = "GloPEM total annual NPP in 2000.", cache = TRUE}
+readd(glcf_2000_plot)
+```
+
+Here's the same map zoomed in on the United States.
+
+```{r plot_2000_usa, fig.cap = "GloPEM total annual NPP in 2000.", warning = FALSE, cache = TRUE}
+readd(glcf_2000_plot_usa)
+```
+
+For the ENSO analysis, I am using the monthly [NINO3 index](https://www.esrl.noaa.gov/psd/gcos_wgsp/Timeseries/Nino3/), averaged annually, calculated from the HadlSST1 reanalysis.
+The dataset spans 1870 to present, but I am only using values that overlap the GloPEM data.
+A time series of the index is shown below.
+
+```{r plot_nino3, fig.cap = "Annually averaged NINO3 index"}
+readd(nino3_plot)
+```
+
+# Empirical orthogonal function analysis
+
+One way to reduce the dimensionality of this dataset is via "Empirical Orthogonal Functions", which are often used in climate science to identify patterns of spatio-temporal variability.
+The analysis can be summarized in the following steps:
+
+1. Flatten the 3D dataset (latitude x longitude x time) down to two dimensions (space x time).
+
+2. Perform a principal component analysis (Eigen / singular value decomposition) on the resulting matrix.
+
+3. Re-project the resulting PCA scores back onto the 2D coordinate space.
+
+The GloPEM dataset contains 20 years of data.
+However, because we are mostly interested in drivers of change in NPP, I remove the first year's NPP from every subsequent year, such that the analysis is on the change in NPP for every year starting in 1981.
+This gives us 19 components to analyze.
+
+The first step is to identify what fraction of variance is explained by each component.
+Below is a plot of the cumulative variance fraction explained by the 20 components.
+
+```{r plot_pca_sd, fig.cap = "Cumulative variance fraction explained by first _n_ principal components."}
+readd(pca_sd_plot)
+```
+
+Unfortunately, this curve is fairly shallow, meaning that we need a lot of PCA components to explain the variance in NPP.
+The first 10 components explain just under 70% of the variance.
+Let's examine the time series associated with each component.
+
+```{r plot_pca_ts, fig.cap = "Loadings of first 10 PCA components"}
+readd(loadings_ts)
+```
+
+The first principal component is dominated by a monotonic increase (we know this is an increase _a priori_; the absolute sign of PC loadings is actually meaningless) in NPP.
+This suggests that the simple `NPP = f(CO2)` formulation in Hector is actually capturing the most important component of the global NPP temporal trajectory.
+However, based on the previous plot, we know that this first component only explains around 12.5% of the global NPP variance.
+What are some factors that can explain the remaining components?
+
+One way to tackle this question is to look at maps of the component scores.
+For instance, below is a map of the scores for PC1.
+
+```{r plot_pc1, fig.cap = "Projection of PC1 scores", cache = TRUE}
+scores <- readd(scores)#[Comp.1 > 3000, Comp.1 := 3000][Comp.1 < -3000, Comp.1 := -3000]
+plt <- ggplot(scores) +
+  aes(x = lon, y = lat, fill = Comp.1) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue4", mid = "white", high = "red4")
+plt
+```
+
+This map looks mostly white because the distribution of scores is really uneven.
+For instance, there is a patch of extremely strong negative scores around the Nile River.
+
+```{r plot_pc1_nile, fig.cap = "Projection of PC1 scores: Zoom on Nile River", cache = TRUE}
+plt + xlim(27, 40) + ylim(20, 33)
+```
+
+Most of the scores are clustered between around -1500 and 1500.
+
+```{r hist_pc1, fig.cap = "Histogram of PC1 scores"}
+hist(scores[, Comp.1], main = "", xlab = "PC1 score")
+```
+
+Therefore, let's redraw the same figure, cropping the colors to the range `[-1500, 1500]`.
+
+```{r plot_pc1_cropped}
+plt %+% scores[abs(Comp.1) > 1500, Comp.1 := sign(Comp.1) * 1500]
+```
+
+This map is still very patchy, but it is a little easier to see some cohesive spatial trends.
+For instance, NPP in the savannas at the southern edge of the Sahara desert show a strong decline in NPP, which are likely related to the desertification of that region.
+Meanwhile, in the north-eastern and central Amazon, along the Atlantic coast of sub-equatorial Africa, and in central Asia, NPP is increasing over this period.
+
+Because component scores are arbitrary, it's hard to understand exactly what's going on with the remaining components without looking at some ancillary data.
+A known driver of variability in NPP is the El Niño Southern Oscillation (ENSO).
+Using these components, we can ask: Which (if any) of these components are related to ENSO?
+We can answer this by looking at temporal correlations with an ENSO index (see _Methods_).
+
+```{r enso_correlation, fig.cap = "Temporal correlation of all PCA components with NINO3 index"}
+readd(enso_corr) %>%
+  ggplot() +
+    aes(x = component, y = R) +
+    geom_col() +
+    labs(x = "PCA component", y = "Correlation with NINO3 index")
+```
+
+PC4 shows a strong positive correlation with ENSO.
+What does its projection look like?
+
+```{r enso_projection, fig.cap = "Projection of PC4"}
+plt %+% aes(fill = Comp.4)
+```
